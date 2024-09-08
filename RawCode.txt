@@ -1,0 +1,567 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <conio.h>
+#include <windows.h>
+#include <math.h>
+#include <time.h>
+
+#define MAX_X 16
+#define MAX_Y 13
+#define MAX_SNAKES 3
+
+#define RESET_COLOR 7  // Default console color
+#define GREEN (FOREGROUND_GREEN | FOREGROUND_INTENSITY)
+#define RED (FOREGROUND_RED | FOREGROUND_INTENSITY)
+#define BLUE (FOREGROUND_BLUE | FOREGROUND_INTENSITY)
+#define YELLOW (FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY)
+
+typedef enum { UP, DOWN, LEFT, RIGHT } direction;
+typedef enum { SINGLE_PLAYER, AUTOPILOT } game_mode;
+
+typedef struct {
+    game_mode gameMode;
+    int num_snakes;
+} settings;
+
+void startMenu(settings *settings) {
+    int choice;
+    printf("********************************\n");
+    printf("*      Welcome to Snake Game   *\n");
+    printf("********************************\n");
+    
+    printf("\nSelect Game Mode:\n");
+    printf("1. Single Player\n");
+    printf("2. Autopilot\n");
+    printf("Enter your choice: ");
+    scanf("%d", &choice);
+    
+    if (choice == 1) {
+        settings->gameMode = SINGLE_PLAYER;
+        settings->num_snakes = 1;
+        printf("Single Player mode selected.\n");
+    } else {
+        settings->gameMode = AUTOPILOT;
+        int num_snakes;
+        printf("Enter number of snakes (1 to 3): ");
+        scanf("%d", &num_snakes);
+        if (num_snakes < 1 || num_snakes > MAX_SNAKES) {
+            printf("Invalid number of snakes. Defaulting to 1.\n");
+            num_snakes = 1;
+        }
+        // Set the number of snakes
+        settings->num_snakes = num_snakes;
+        printf("Autopilot mode selected with %d snake(s).\n", num_snakes);
+    }
+}
+
+void clearScreen() {
+    system("cls");
+}
+
+typedef struct {
+    int x;
+    int y;
+} tail_t;
+
+typedef struct {
+    int x;
+    int y;
+    int maturity;
+    time_t next_maturity_time;
+} food_t;
+
+typedef struct {
+    size_t fsize;
+    food_t *food_arr;
+    time_t last_update_time;
+} food_container_t;
+
+food_container_t initFood(size_t fsize){
+    food_container_t food_container;
+    food_container.fsize = fsize;
+    food_container.food_arr = (food_t*)malloc(sizeof(food_t) * fsize); // Allocate based on fsize
+    food_container.last_update_time = time(NULL);
+
+    size_t index = 0;
+    for(size_t i = 3; i < MAX_X - 1; i+=3) {
+        for(size_t j = 1; j < MAX_Y - 2; j++) {
+            if (j != 1 && j != 6 && index < 32) {
+                food_container.food_arr[index].x = i;
+                food_container.food_arr[index].y = j;
+                food_container.food_arr[index].maturity = 0;
+                food_container.food_arr[index].next_maturity_time = time(NULL) + (rand() % 10 + 1); // Random time within 10 seconds
+                index++;
+            }
+        }
+    }
+    return food_container;
+}
+
+void updateFoodMaturity(food_container_t *food_container) {
+    time_t current_time = time(NULL); // Get current time
+    for (size_t i = 0; i < food_container->fsize; i++) {
+        if (current_time >= food_container->food_arr[i].next_maturity_time) {
+            if (food_container->food_arr[i].maturity < 2) {
+                food_container->food_arr[i].maturity++;
+            }
+            food_container->food_arr[i].next_maturity_time = current_time + (rand() % 20 + 5);
+        }
+    }
+}
+
+typedef struct {
+    int x;
+    int y;
+    int level;
+    int speed;
+    tail_t *tail;
+    size_t tsize;
+    direction direction;
+} snake_t;
+
+snake_t initSnake(int x, int y, size_t tsize) {
+    snake_t snake;
+    snake.x = x;
+    snake.y = y;
+    snake.level = 0;
+    snake.speed = 400;
+    snake.tsize = tsize;
+    
+    snake.tail = (tail_t*)malloc(sizeof(tail_t) * 100); // Grows up to 100 elements
+    for(size_t i = 0; i < tsize; i++) {
+        snake.tail[i].x = x + i + 1;
+        snake.tail[i].y = y;
+    }
+    snake.direction = RIGHT;
+    return snake;
+}
+
+void printSnake(snake_t snakes[], int num_snakes, food_container_t food_container) {
+    HANDLE hStdOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    char matrix[MAX_Y][MAX_X];
+    int food_positions[MAX_Y][MAX_X];
+
+    // Initialize the matrix and food positions
+    for (int i = 0; i < MAX_Y; i++) {
+        for (int j = 0; j < MAX_X; j++) {
+            if (i == 0 || i == MAX_Y - 1) {
+                matrix[i][j] = '-';
+            } else if (j == 0 || j == MAX_X - 1) {
+                matrix[i][j] = '|';
+            } else {
+                matrix[i][j] = ' ';
+            }
+            food_positions[i][j] = -1; // -1 indicates no food at this position
+        }
+    }
+
+    // Place all snakes in the matrix
+    for (int s = 0; s < num_snakes; s++) {
+        // Head of each snake
+        matrix[snakes[s].y][snakes[s].x] = '@';
+
+        // Tail of each snake
+        for (size_t i = 0; i < snakes[s].tsize; i++) {
+            matrix[snakes[s].tail[i].y][snakes[s].tail[i].x] = '*';  // Snake tail
+        }
+    }
+
+    // Place the snake's food and mark their positions in the food_positions array
+    for (size_t i = 0; i < food_container.fsize; i++) {
+        int x = food_container.food_arr[i].x;
+        int y = food_container.food_arr[i].y;
+        matrix[y][x] = '$';
+        food_positions[y][x] = food_container.food_arr[i].maturity; // Store maturity directly
+    }
+    
+    // Print the matrix with colors using the precomputed food_positions array
+    for (int i = 0; i < MAX_Y; i++) {
+        for (int j = 0; j < MAX_X; j++) {
+            if (matrix[i][j] == '$' && food_positions[i][j] != -1) {
+                switch (food_positions[i][j]) {
+                    case 0:
+                        SetConsoleTextAttribute(hStdOut, GREEN);
+                        break;
+                    case 1:
+                        SetConsoleTextAttribute(hStdOut, YELLOW);
+                        break;
+                    case 2:
+                        SetConsoleTextAttribute(hStdOut, RED);
+                        break;
+                }
+            } else {
+                SetConsoleTextAttribute(hStdOut, RESET_COLOR);
+            }
+            printf("%c", matrix[i][j]);
+        }
+        printf("\n");
+    }
+}
+
+void printExit(snake_t snakes[], int snakes_num) {
+    clearScreen();
+    printf("Game over!\n");
+    for (int i = 0; i < snakes_num; i++) {
+        printf("Snake%d reached level: %d!\n", i+1, snakes[i].level);
+        printf("\n");
+    }
+    
+    
+    exit(0);
+}
+
+void eat_food(snake_t *snake, food_container_t *food_container, int snakes_num) {
+    for(size_t i = 0; i < food_container->fsize; i++) {
+        if(snake->x == food_container->food_arr[i].x && snake->y == food_container->food_arr[i].y) {
+            if(food_container->food_arr[i].maturity < 2) {
+                printExit(snake, snakes_num);
+            }
+
+            snake->tsize++;
+            snake->tail[snake->tsize - 1] = snake->tail[snake->tsize - 2];
+
+            snake->level++;
+            snake->speed -= (int)(20 / log(snake->level + 1));
+            for(size_t j = i; j < food_container->fsize - 1; j++) {
+                food_container->food_arr[j] = food_container->food_arr[j + 1];
+            }
+            food_container->fsize--;
+            break;
+        }
+    }
+}
+
+// Check if the next position would collide with the snake's own tail
+_Bool check_head_position(snake_t *snake) {
+    for(size_t i = 0; i < snake->tsize; i++) {
+        if(snake->x == snake->tail[i].x && snake->y == snake->tail[i].y) {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+_Bool check_safe_move(snake_t *snake, food_container_t *food_container, int next_x, int next_y) {
+    // Check if the next position would collide with the snake's own tail
+    for (size_t i = 0; i < snake->tsize; i++) {
+        if (next_x == snake->tail[i].x && next_y == snake->tail[i].y) {
+            return FALSE; // Unsafe move if next position is occupied by the tail
+        }
+    }
+
+    // Check if the next position would collide with unripened food
+    for (size_t i = 0; i < food_container->fsize; i++) {
+        if (food_container->food_arr[i].maturity < 2 && 
+            food_container->food_arr[i].x == next_x && 
+            food_container->food_arr[i].y == next_y) {
+            return FALSE; // Unsafe move if next position is occupied by unripened food
+        }
+    }
+
+    return TRUE; // Safe move
+}
+    
+void find_safe_move(snake_t *snake, food_container_t *food_container) {
+    int next_x = snake->x;
+    int next_y = snake->y;
+
+    if( next_x < 2 && snake->direction == LEFT) {
+        if (next_y < MAX_Y / 2) {
+            snake->direction = DOWN;
+            return;
+        } else {
+            snake->direction = UP;
+            return;
+        }
+    }
+
+    if( next_y < 2 && snake->direction == UP) {
+        if (next_x < MAX_X / 2) {
+            snake->direction = RIGHT;
+            return;
+        } else {
+            snake->direction = LEFT;
+            return;
+        }
+    }
+
+    if( next_x > MAX_X - 3 && snake->direction == RIGHT) {
+        if (next_y < MAX_Y / 2) {
+            snake->direction = DOWN;
+            return;
+        } else {
+            snake->direction = UP;
+            return;
+        }
+    }
+
+    if( next_y > MAX_Y - 3 && snake->direction == DOWN) {
+        if (next_x < MAX_X / 2) {
+            snake->direction = RIGHT;
+            return;
+        } else {
+            snake->direction = LEFT;
+            return;
+        }
+    }
+    
+    // Move based on current direction first
+    switch(snake->direction) {
+        case RIGHT:
+            if (check_safe_move(snake, food_container, next_x + 1, next_y)) return;
+            break;
+        case LEFT:
+            if (check_safe_move(snake, food_container, next_x - 1, next_y)) return;
+            break;
+        case UP:
+            if (check_safe_move(snake, food_container, next_x, next_y - 1)) return;
+            break;
+        case DOWN:
+            if (check_safe_move(snake, food_container, next_x, next_y + 1)) return;
+            break;
+    }
+    
+    // If current direction is blocked, try others
+    if (check_safe_move(snake, food_container, next_x - 1, next_y)) {
+        snake->direction = LEFT;
+        return;
+    }
+    if (check_safe_move(snake, food_container, next_x + 1, next_y)) {
+        snake->direction = RIGHT;
+        return;
+    }
+    if (check_safe_move(snake, food_container, next_x, next_y - 1)) {
+        snake->direction = UP;
+        return;
+    }
+    if (check_safe_move(snake, food_container, next_x, next_y + 1)) {
+        snake->direction = DOWN;
+        return;
+    }
+}
+
+void moveLeft(snake_t *snake) {
+    if(snake->x > 0) {
+        snake->x -= 1;
+    }
+}
+
+void moveRight(snake_t *snake) {
+    if(snake->x < MAX_X - 1) {
+        snake->x += 1;
+    }
+}
+
+void moveUp(snake_t *snake) {
+    if(snake->y > 0) {
+        snake->y -= 1;
+    }
+}
+
+void moveDown(snake_t *snake) {
+    if(snake->y < MAX_Y - 1) {
+        snake->y += 1;
+    }
+}
+
+void move(snake_t *snake) {
+    for(int i = snake->tsize - 1; i > 0; i--) {
+        snake->tail[i] = snake->tail[i-1];
+    }
+
+    snake->tail[0].x = snake->x;
+    snake->tail[0].y = snake->y;
+
+    switch (snake->direction)
+        {
+        case LEFT:
+            moveLeft(snake);
+            break;
+        case RIGHT:
+            moveRight(snake);
+            break;
+        case UP:
+            moveUp(snake);
+            break;
+        case DOWN:
+            moveDown(snake);
+            break;
+        default:
+            break;
+        }
+}
+
+void pause_game() {
+    while (1) {
+        if (kbhit()) {
+            char key = getch();
+            if (key == 'p' || key == 'P') {
+                break;
+            }
+        }
+        Sleep(1000); // Sleep for a short time to prevent high CPU usage
+    }
+}
+
+void get_direction(snake_t *snake, int snakes_num) {
+    char key = getch();
+    
+    switch (key) {
+        case 'a':
+            if (snake->direction != RIGHT)
+                snake->direction = LEFT;
+            break;
+        case 'd':
+            if (snake->direction != LEFT)
+                snake->direction = RIGHT;
+            break;
+        case 'w':
+            if (snake->direction != DOWN)
+                snake->direction = UP;
+            break;
+        case 's':
+            if (snake->direction != UP)
+                snake->direction = DOWN;
+            break;
+        case 'c':
+            printExit(snake, snakes_num);
+            break;
+        case 'p':
+            pause_game();
+            break;
+        default:
+            // Do nothing for other keys
+            break;
+    }
+}
+
+void generateSnakeDirection(snake_t *snake2, food_container_t food_container, int snakes_num) {
+    if (snake2 == NULL) {
+        return;
+    }
+
+    // If no food, just find a safe move
+    if (food_container.fsize == 0) {
+        printExit(snake2, snakes_num);
+    }
+
+    // Step 1: Find the nearest ripened food item (maturity = 2)
+    food_t *nearest_food_item = NULL;
+    int min_distance = INT_MAX;
+
+    for (size_t i = 0; i < food_container.fsize; i++) {
+        if (food_container.food_arr[i].maturity == 2) {
+            int dist_x = abs(snake2->x - food_container.food_arr[i].x);
+            int dist_y = abs(snake2->y - food_container.food_arr[i].y);
+            int distance = dist_x + dist_y; // Manhattan distance
+
+            if (distance < min_distance) {
+                min_distance = distance;
+                nearest_food_item = &food_container.food_arr[i];
+            }
+        }
+    }
+
+    // Step 2: If no ripened food is found, find a safe move
+    if (nearest_food_item == NULL) {
+        find_safe_move(snake2, &food_container);
+        return;
+    }
+
+    // Step 3: Determine the direction based on the nearest food item's position
+    int x_diff = nearest_food_item->x - snake2->x;
+    int y_diff = nearest_food_item->y - snake2->y;
+
+    // Step 4: Prioritize x-axis movement if absolute x difference is larger, otherwise prioritize y-axis
+    int next_x = snake2->x;
+    int next_y = snake2->y;
+
+    if (abs(x_diff) > abs(y_diff)) {
+        next_x = (x_diff > 0) ? snake2->x + 1 : snake2->x - 1; // Right or Left
+    } else {
+        next_y = (y_diff > 0) ? snake2->y + 1 : snake2->y - 1; // Down or Up
+    }
+
+    // Step 5: Check if the proposed move is safe
+    if (check_safe_move(snake2, &food_container, next_x, next_y)) {
+        // Step 6: Set direction based on the chosen move
+        if (next_x > snake2->x) {
+            snake2->direction = RIGHT;
+        } else if (next_x < snake2->x) {
+            snake2->direction = LEFT;
+        } else if (next_y > snake2->y) {
+            snake2->direction = DOWN;
+        } else if (next_y < snake2->y) {
+            snake2->direction = UP;
+        }
+    } else {
+        // If the chosen move is not safe, find another safe move
+        find_safe_move(snake2, &food_container);
+    }
+}
+
+void cleanup(snake_t snakes[], int num_snakes, food_container_t *food_container) {
+    // Free snake tails
+    for (int i = 0; i < num_snakes; i++) {
+        free(snakes[i].tail);
+    }
+
+    // Free food container array
+    free(food_container->food_arr);
+}
+
+int main(void) {
+    settings settings;
+    startMenu(&settings);
+    srand(time(NULL)); // Seed the random number generator. This ensures that the timing of food ripening is different each time you run the game.
+
+    food_container_t food_container = initFood(32);
+    snake_t snakes[MAX_SNAKES];
+
+    int startX = 3;
+    int startY = 11;
+
+    for (int i = 0; i < settings.num_snakes; i++) {
+        // Adjust starting positions to avoid overlap
+        if (i == 1) {
+            startX = 10;
+            startY = 11;
+        }
+        if (i == 2) {
+            startX = 10;
+            startY = 3;
+        }
+        snakes[i] = initSnake(startX, startY, 1);
+    }
+
+    while (1) {
+        for (int i = 0; i < settings.num_snakes; i++) {
+            if (settings.gameMode == AUTOPILOT) {
+                generateSnakeDirection(&snakes[i], food_container, settings.num_snakes);
+            } else if (kbhit()) {
+                get_direction(&snakes[i], settings.num_snakes);
+            }
+
+            move(&snakes[i]);
+            if (check_head_position(&snakes[i])) {
+                printExit(snakes, settings.num_snakes);
+            }
+
+            eat_food(&snakes[i], &food_container, settings.num_snakes);
+        }
+
+        updateFoodMaturity(&food_container);
+        Sleep(snakes[0].speed);
+        clearScreen();
+        printSnake(snakes, settings.num_snakes, food_container);
+    }
+
+    cleanup(snakes, settings.num_snakes, &food_container);
+
+    return 0;
+}
+
+// Optimisation commands:
+// gcc -O2 -o snake_game snake_game.c
+// .\snake_game
+// objdump -d snake_game.exe 1>61.asm
